@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Simple AR Marker & 3D QR Code Demo</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #121212;
+      color: #f0f0f0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+    h1 {
+      margin-top: 1rem;
+      text-align: center;
+      font-weight: 700;
+      color: #00ffff;
+      text-shadow: 0 0 5px #00ffff;
+    }
+    #ar-container {
+      width: 80vw;
+      height: 60vh;
+      margin: 1rem 0;
+      border: 2px solid #00ffff;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    #qr-section {
+      width: 480px;
+      margin: 2rem auto;
+      background: #222;
+      border-radius: 10px;
+      padding: 1rem;
+      box-shadow: 0 0 15px #00ffff;
+    }
+    #qr-canvas {
+      display: block;
+      margin: 0 auto;
+      background: #fff;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    label, input, button {
+      display: block;
+      width: 100%;
+      margin-top: 1rem;
+      font-size: 1rem;
+      line-height: 1.5;
+    }
+    input {
+      padding: 0.5rem;
+      border-radius: 5px;
+      border: none;
+      outline: none;
+      font-weight: 600;
+    }
+    button {
+      background-color: #00ffff;
+      color: #121212;
+      font-weight: bold;
+      padding: 0.75rem;
+      border: none;
+      border-radius: 8px;
+      transition: background-color 0.3s ease;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #00bbbb;
+    }
+  </style>
+  <!-- Include A-Frame, AR.js for AR marker tracking -->
+  <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
+  <script src="https://rawcdn.githack.com/jeromeetienne/ar.js/2.0.0/aframe/build/aframe-ar.min.js"></script>
+  <!-- Include Three.js for 3D QR rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.min.js"></script>
+  <!-- Include QRCode library -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+</head>
+<body>
+  <h1>AR Marker Reader & 3D QR Code Generator</h1>
+
+  <!-- AR Section -->
+  <div id="ar-container">
+    <a-scene embedded arjs='sourceType: webcam;debugUIEnabled: false;' vr-mode-ui="enabled: false">
+      <!-- Marker to track: Hiro marker -->
+      <a-marker preset="hiro">
+        <!-- 3D Box that appears on detected marker -->
+        <a-box position='0 0.5 0' material='color: cyan; opacity: 0.7;' rotation="0 45 0"></a-box>
+        <a-sphere position="0 1.25 0" radius="0.3" color="#EF2D5E"></a-sphere>
+        <a-text value="Hello AR!" align="center" position="0 1.75 0" color="#00ffff" width="4"></a-text>
+      </a-marker>
+      <a-entity camera></a-entity>
+    </a-scene>
+  </div>
+
+  <!-- QR Code Section -->
+  <section id="qr-section">
+    <label for="qr-input">Enter text or URL to generate 3D QR Code:</label>
+    <input id="qr-input" type="text" placeholder="https://example.com" value="https://example.com" />
+    <button id="generate-btn">Generate 3D QR Code</button>
+    <!-- Canvas for 2D QR code rendering before 3D processing -->
+    <canvas id="qr-canvas" width="256" height="256" title="Click the QR Code to download"></canvas>
+  </section>
+
+  <script>
+  // This script handles two main parts:
+  // 1. The AR.js marker reading is already set up with a-scene and a-marker.
+  // 2. Generating and rendering a 3D styled QR code using Three.js.
+
+  // QR Code Generation & 3D Rendering Logic
+  const qrInput = document.getElementById('qr-input');
+  const generateBtn = document.getElementById('generate-btn');
+  const qrCanvas = document.getElementById('qr-canvas');
+
+  // Setup Three.js scene for 3D QR render
+  let scene, camera, renderer, qrGroup;
+  let animationId = null;
+
+  function initThreeJS() {
+    // Clear old canvas if any
+    if(renderer) {
+      cancelAnimationFrame(animationId);
+      renderer.dispose && renderer.dispose();
+      renderer = null;
+      qrGroup = null;
+      scene = null;
+      camera = null;
+    }
+
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(45, qrCanvas.width / qrCanvas.height, 0.1, 1000);
+    camera.position.z = 100;
+
+    renderer = new THREE.WebGLRenderer({ canvas: qrCanvas, alpha: true });
+    renderer.setSize(qrCanvas.width, qrCanvas.height);
+    renderer.setClearColor(0xffffff, 0);
+
+    // Add light for 3D effect
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    directionalLight.position.set(0, 0, 1);
+    scene.add(directionalLight);
+
+    const ambientLight = new THREE.AmbientLight(0x888888);
+    scene.add(ambientLight);
+
+    qrGroup = new THREE.Group();
+    scene.add(qrGroup);
+  }
+
+  function generateQRCodeData(text) {
+    return new Promise((resolve, reject) => {
+      QRCode.toDataURL(text, { margin: 1, scale: 10 }, function (err, url) {
+        if (err) reject(err);
+        resolve(url);
+      });
+    });
+  }
+
+  function create3DQRCode(qrImage) {
+    // We'll create a 3D block for each black module in the QR code
+    // To get pixel data, draw it on hidden canvas
+    const img = new Image();
+    img.crossOrigin = 'Anonymous';
+    img.onload = () => {
+      // Draw image on temporary canvas to read pixels
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = img.width;
+      tempCanvas.height = img.height;
+      const ctx = tempCanvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const imageData = ctx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+      const data = imageData.data;
+
+      qrGroup.clear && qrGroup.clear();
+      // Remove all children from qrGroup
+      while (qrGroup.children.length > 0) {
+        qrGroup.remove(qrGroup.children[0]);
+      }
+
+      const cubeSize = 2;
+      // Iterate over pixels, step by cubeSize to reduce number of cubes
+      for (let y = 0; y < tempCanvas.height; y += cubeSize) {
+        for (let x = 0; x < tempCanvas.width; x += cubeSize) {
+          // Get pixel alpha to check if black block
+          const i = (y * tempCanvas.width + x) * 4;
+          const r = data[i];
+          const g = data[i + 1];
+          const b = data[i + 2];
+          const a = data[i + 3];
+          // Threshold: if pixel is dark enough, create cube
+          if (a > 128 && r < 80 && g < 80 && b < 80) {
+            // Create cube
+            const geometry = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
+            const material = new THREE.MeshPhongMaterial({ color: 0x000000 });
+            const cube = new THREE.Mesh(geometry, material);
+            // Center cubes around (0,0)
+            cube.position.x = x - tempCanvas.width / 2;
+            cube.position.y = tempCanvas.height / 2 - y;
+            cube.position.z = 0;
+            qrGroup.add(cube);
+          }
+        }
+      }
+      qrGroup.position.z = -10;
+
+      animate();
+    };
+    img.src = qrImage;
+  }
+
+  function animate() {
+    animationId = requestAnimationFrame(animate);
+    // Rotate group slowly for cool 3D effect
+    qrGroup.rotation.y += 0.01;
+    qrGroup.rotation.x += 0.005;
+    renderer.render(scene, camera);
+  }
+
+  async function generateAndRender3DQR() {
+    const text = qrInput.value.trim();
+    if (!text) {
+      alert('Please enter a valid text or URL');
+      return;
+    }
+    generateBtn.disabled = true;
+    try {
+      const qrDataUrl = await generateQRCodeData(text);
+      // Also draw QR code image on canvas 2D for download
+      const ctx = qrCanvas.getContext('2d');
+      let img = new Image();
+      img.onload = () => {
+        ctx.clearRect(0, 0, qrCanvas.width, qrCanvas.height);
+        ctx.drawImage(img, 0, 0, qrCanvas.width, qrCanvas.height);
+      };
+      img.src = qrDataUrl;
+
+      // Initialize and create 3D QR code
+      initThreeJS();
+      create3DQRCode(qrDataUrl);
+    } catch (e) {
+      alert('Error generating QR code: ' + e.message);
+    } finally {
+      generateBtn.disabled = false;
+    }
+  }
+
+  generateBtn.addEventListener('click', generateAndRender3DQR);
+
+  // Initial call to generate default QR code
+  window.onload = () => {
+    generateAndRender3DQR();
+  };
+
+  // Allow user to click QR canvas to download plain QR code (2D)
+  qrCanvas.addEventListener('click', () => {
+    const link = document.createElement('a');
+    link.download = 'qr-code.png';
+    link.href = qrCanvas.toDataURL();
+    link.click();
+  });
+  </script>
+</body>
+</html>
+
